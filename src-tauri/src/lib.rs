@@ -150,6 +150,7 @@ pub fn run() {
                         .permission("core:webview:allow-create-webview-window")
                         .permission("updater:default")
                         .permission("process:default")
+                        .permission("dialog:default")
                         .remote(localhost_url.to_string())
                         .window("main"),
                 )?;
