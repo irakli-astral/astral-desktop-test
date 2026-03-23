@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Astral",
+  "version": "0.1.17",
+  "identifier": "com.astral.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' tauri: ipc: http://ipc.localhost http://localhost:* https://*.clerk.accounts.dev https://clerk.astral.now https://*.clerk.com https://app.astral.com https://app.astral.now https://astral-dev.astral.now https://*.astral.now; frame-src https://challenges.cloudflare.com https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:"
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "Astral",
+    "category": "Utility",
+    "shortDescription": "Route traffic through your home IP",
+    "longDescription": "Astral connects your desktop to the Astral relay server, routing cloud browser traffic through your residential IP address.",
+    "copyright": "Copyright 2025 Astral. All rights reserved.",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Astral-Agent/astral-desktop/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVFQkY2RjQ5QTYzQkI4NDcKUldSSHVEdW1TVysvWGdQaFNFZ3lDb3JZYXVFMnYyRDhEdnB4L1RoR2ZHQTdOdysxMHh2SjF1MDUK"
+    }
+  }
+}

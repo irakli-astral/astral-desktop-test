@@ -1,0 +1,64 @@
+[package]
+name = "Astral"
+version = "0.1.17"
+description = "Astral Tunnel desktop app"
+edition = "2021"
+rust-version = "1.82"
+
+[lib]
+name = "astral_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.10", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-log = "2"
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+tauri-plugin-store = "2"
+tauri-plugin-localhost = "2"
+portpicker = "0.1"
+tauri-plugin-autostart = "2"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# Network change detection — if-watch for Linux/Windows (native events), kept for non-macOS
+if-watch = { version = "3.2", features = ["tokio"] }
+
+# Exponential backoff for classify retry after network transitions
+backoff = { version = "0.4", features = ["tokio"] }
+
+# IANA timezone detection (used by control plane client for classify/heartbeat requests)
+iana-time-zone = "0.1"
+
+# HTTP client for control plane API (classify + heartbeat)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Load .env in dev mode so Rust has VITE_* env vars (Vite only exposes them to JS)
+dotenvy = "0.15"
+
+# Our tunnel library
+tunnel-core = { path = "../crates/tunnel-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Native macOS network change detection (instant, replaces if-watch's 10s polling on macOS)
+netwatcher = "0.4"
+# Disable App Nap so background network detection works when app is unfocused/in tray
+objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -1,0 +1,39 @@
+[package]
+name = "tunnel-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "macros", "time"] }
+
+# WebSocket client
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+
+# Stream multiplexing (must match relay's version)
+yamux = "0.13"
+
+# Bridges futures-io ↔ tokio-io + CancellationToken
+tokio-util = { version = "0.7", features = ["compat"] }
+futures-util = { version = "0.3", features = ["sink"] }
+
+# Byte buffers
+bytes = "1"
+
+# Serialization (for TunnelStatsSnapshot sent to frontend)
+serde = { version = "1", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+
+# Error handling
+anyhow = "1"
+
+# Jitter randomization for reconnect backoff
+rand = "0.8"
+
+# HTTP client for refresh endpoint
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# JSON parsing for refresh response
+serde_json = "1"
