@@ -31,9 +31,9 @@ jobs:
       matrix:
         include:
           - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin --bundles dmg,updater'
+            args: '--target aarch64-apple-darwin --bundles app,dmg,updater'
           - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin --bundles dmg,updater'
+            args: '--target x86_64-apple-darwin --bundles app,dmg,updater'
           - platform: 'windows-latest'
             args: '--bundles nsis'
           - platform: 'ubuntu-22.04'
