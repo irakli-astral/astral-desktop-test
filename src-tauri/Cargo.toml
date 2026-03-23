@@ -1,6 +1,6 @@
 [package]
 name = "Astral"
-version = "0.1.22"
+version = "0.1.23"
 description = "Astral Tunnel desktop app"
 edition = "2021"
 rust-version = "1.82"
