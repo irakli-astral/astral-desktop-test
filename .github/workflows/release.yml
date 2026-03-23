@@ -1,0 +1,336 @@
+name: 'Release Astral Desktop'
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+
+# Required GitHub Actions secrets:
+#   VITE_CLERK_PUBLISHABLE_KEY  - Clerk publishable key (public, baked into JS at build time)
+#   VITE_API_BASE               - API base URL (e.g., https://app.astral.com)
+#   VITE_VERCEL_PROTECTION_BYPASS - Vercel deployment protection bypass (staging only)
+#   SUPABASE_SECRET_KEY         - Supabase secret key (for artifact upload)
+#   TAURI_SIGNING_PRIVATE_KEY   - Updater signing key (generate: pnpm tauri signer generate)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD - Password for signing key (or empty)
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin --bundles dmg'
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin --bundles dmg'
+          - platform: 'windows-latest'
+            args: '--bundles nsis'
+          - platform: 'ubuntu-22.04'
+            args: '--bundles deb,appimage'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'pnpm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and release
+        id: tauri-build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Vite bakes VITE_* env vars into the JS bundle at build time.
+          # Clerk publishable key is public by design (embedded in every frontend).
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+          VITE_VERCEL_PROTECTION_BYPASS: ${{ secrets.VITE_VERCEL_PROTECTION_BYPASS }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name || inputs.version }}
+          releaseName: 'Astral Desktop ${{ github.ref_name || inputs.version }}'
+          releaseBody: |
+            ## Astral Desktop ${{ github.ref_name || inputs.version }}
+
+            ### Installation
+            - **macOS**: Download the `.dmg` file, open it, and drag Astral to Applications. On first launch: right-click → Open to bypass Gatekeeper.
+            - **Windows**: Download the `.msi` file and run the installer. Click "More info" → "Run anyway" if SmartScreen appears.
+            - **Linux**: Download the `.AppImage` file, make it executable (`chmod +x`), and run.
+
+            **Full Changelog**: https://github.com/${{ github.repository }}/commits/${{ github.ref_name || inputs.version }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      # Upload built artifacts to Supabase Storage for direct download from landing page.
+      # Bucket "desktop-releases" must be created as a PUBLIC bucket in Supabase Storage.
+      # Files are uploaded to both versioned (v1.2.3/) and latest/ paths.
+      - name: Upload to Supabase Storage
+        if: steps.tauri-build.outputs.artifactPaths != ''
+        env:
+          SUPABASE_URL: 'https://nzxfapffcwsaovcqotrn.supabase.co'
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ github.ref_name || inputs.version }}"
+          ARTIFACT_PATHS='${{ steps.tauri-build.outputs.artifactPaths }}'
+
+          echo "Version: ${VERSION}"
+          echo "Artifact paths: ${ARTIFACT_PATHS}"
+
+          # Write artifact paths to a temp file, then loop without a pipe (avoids subshell)
+          echo "${ARTIFACT_PATHS}" | jq -r '.[]' > "$RUNNER_TEMP/artifact_list.txt"
+
+          while IFS= read -r FILE_PATH; do
+            # Strip trailing \r from Windows line endings (jq on Windows outputs CRLF)
+            FILE_PATH="${FILE_PATH%$'\r'}"
+
+            if [ ! -f "${FILE_PATH}" ]; then
+              echo "Skipping (not a file): ${FILE_PATH}"
+              continue
+            fi
+
+            FILENAME=$(basename "${FILE_PATH}")
+
+            # Skip updater signature files and other non-installer artifacts
+            case "${FILENAME}" in
+              *.sig|*.json|*.tar.gz) echo "Skipping non-installer: ${FILENAME}"; continue ;;
+            esac
+
+            # Determine content type based on extension
+            case "${FILENAME}" in
+              *.dmg)      CONTENT_TYPE="application/x-apple-diskimage" ;;
+              *.msi)      CONTENT_TYPE="application/x-msi" ;;
+              *.exe)      CONTENT_TYPE="application/x-msdownload" ;;
+              *.AppImage) CONTENT_TYPE="application/octet-stream" ;;
+              *)          CONTENT_TYPE="application/octet-stream" ;;
+            esac
+
+            FILE_SIZE=$(wc -c < "${FILE_PATH}" | tr -d ' ')
+            echo "Uploading ${FILENAME} (${FILE_SIZE} bytes, ${CONTENT_TYPE})..."
+
+            # Upload to versioned path: desktop-releases/v1.2.3/Astral_x.y.z_arch.dmg
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              "${SUPABASE_URL}/storage/v1/object/desktop-releases/${VERSION}/${FILENAME}" \
+              -H "Authorization: Bearer ${SUPABASE_SECRET_KEY}" \
+              -H "apikey: ${SUPABASE_SECRET_KEY}" \
+              -H "Content-Type: ${CONTENT_TYPE}" \
+              -H "x-upsert: true" \
+              --data-binary @"${FILE_PATH}")
+
+            if [ "${HTTP_STATUS}" -ge 200 ] && [ "${HTTP_STATUS}" -lt 300 ]; then
+              echo "  -> Versioned upload OK (HTTP ${HTTP_STATUS})"
+            else
+              echo "  -> Versioned upload FAILED (HTTP ${HTTP_STATUS})"
+              exit 1
+            fi
+
+            # Upload to latest path: desktop-releases/latest/Astral_x.y.z_arch.dmg
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              "${SUPABASE_URL}/storage/v1/object/desktop-releases/latest/${FILENAME}" \
+              -H "Authorization: Bearer ${SUPABASE_SECRET_KEY}" \
+              -H "apikey: ${SUPABASE_SECRET_KEY}" \
+              -H "Content-Type: ${CONTENT_TYPE}" \
+              -H "x-upsert: true" \
+              --data-binary @"${FILE_PATH}")
+
+            if [ "${HTTP_STATUS}" -ge 200 ] && [ "${HTTP_STATUS}" -lt 300 ]; then
+              echo "  -> Latest upload OK (HTTP ${HTTP_STATUS})"
+            else
+              echo "  -> Latest upload FAILED (HTTP ${HTTP_STATUS})"
+              exit 1
+            fi
+
+            # Record filename for manifest
+            echo "${FILENAME}" >> "$RUNNER_TEMP/uploaded_files.txt"
+          done < "$RUNNER_TEMP/artifact_list.txt"
+
+          echo "All artifacts uploaded to Supabase Storage."
+
+      # Save the list of uploaded filenames so the finalize job can build a manifest.
+      # Each matrix runner writes to a uniquely-named file to avoid overwrites when merged.
+      - name: Save uploaded filenames
+        if: steps.tauri-build.outputs.artifactPaths != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: uploaded-files-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/uploaded_files.txt
+          if-no-files-found: ignore
+
+  # After all platform builds complete, create a manifest.json listing all artifacts.
+  # The landing page fetches this manifest from the public bucket to resolve download URLs.
+  upload-manifest:
+    needs: publish-tauri
+    runs-on: ubuntu-latest
+    steps:
+      # Each artifact is downloaded into its own subdirectory (no merge)
+      # to avoid filename collisions (all are named uploaded_files.txt).
+      - name: Download all filename lists
+        uses: actions/download-artifact@v4
+        with:
+          pattern: uploaded-files-*
+          path: ${{ runner.temp }}/filenames
+
+      - name: Build manifest, clean latest/, and re-populate from versioned folder
+        env:
+          SUPABASE_URL: 'https://nzxfapffcwsaovcqotrn.supabase.co'
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ github.ref_name || inputs.version }}"
+
+          # --- 1. Build manifest from uploaded filename lists ---
+          FILES_JSON="[]"
+          for f in "$RUNNER_TEMP"/filenames/*/uploaded_files.txt; do
+            if [ -f "$f" ]; then
+              while IFS= read -r filename; do
+                [ -z "$filename" ] && continue
+                FILES_JSON=$(echo "$FILES_JSON" | jq --arg name "$filename" '. + [$name]')
+              done < "$f"
+            fi
+          done
+
+          FILES_JSON=$(echo "$FILES_JSON" | jq 'unique | sort')
+
+          MANIFEST=$(jq -n \
+            --arg version "$VERSION" \
+            --argjson files "$FILES_JSON" \
+            '{version: $version, files: $files}')
+
+          echo "Manifest:"
+          echo "$MANIFEST" | jq .
+          echo "$MANIFEST" > "$RUNNER_TEMP/manifest.json"
+
+          # Upload manifest to versioned path
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            "${SUPABASE_URL}/storage/v1/object/desktop-releases/${VERSION}/manifest.json" \
+            -H "Authorization: Bearer ${SUPABASE_SECRET_KEY}" \
+            -H "apikey: ${SUPABASE_SECRET_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "x-upsert: true" \
+            --data-binary @"$RUNNER_TEMP/manifest.json")
+
+          if [ "${HTTP_STATUS}" -lt 200 ] || [ "${HTTP_STATUS}" -ge 300 ]; then
+            echo "Failed to upload versioned manifest (HTTP ${HTTP_STATUS})"
+            exit 1
+          fi
+
+          # --- 2. Clean all files from latest/ ---
+          OLD_FILES=$(curl -s \
+            "${SUPABASE_URL}/storage/v1/object/list/desktop-releases" \
+            -H "Authorization: Bearer ${SUPABASE_SECRET_KEY}" \
+            -H "apikey: ${SUPABASE_SECRET_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"prefix":"latest/","limit":100}')
+
+          OLD_NAMES=$(echo "$OLD_FILES" | jq -r '.[] | select(.id != null) | .name')
+
+          if [ -n "$OLD_NAMES" ]; then
+            PATHS_JSON=$(echo "$OLD_NAMES" | jq -R '"latest/" + .' | jq -s '.')
+            echo "Cleaning latest/: $(echo "$PATHS_JSON" | jq -r '.[]')"
+            curl -s -o /dev/null \
+              -X DELETE \
+              "${SUPABASE_URL}/storage/v1/object/desktop-releases" \
+              -H "Authorization: Bearer ${SUPABASE_SECRET_KEY}" \
+              -H "apikey: ${SUPABASE_SECRET_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"prefixes\": $PATHS_JSON}"
+          fi
+
+          # --- 3. Copy files from versioned folder to latest/ ---
+          # Download each file from vX.Y.Z/ and re-upload to latest/
+          for FILENAME in $(echo "$FILES_JSON" | jq -r '.[]'); do
+            echo "Copying ${VERSION}/${FILENAME} -> latest/${FILENAME}"
+
+            # Download from versioned path
+            curl -s -o "$RUNNER_TEMP/${FILENAME}" \
+              "${SUPABASE_URL}/storage/v1/object/public/desktop-releases/${VERSION}/${FILENAME}"
+
+            # Determine content type
+            case "${FILENAME}" in
+              *.dmg)      CONTENT_TYPE="application/x-apple-diskimage" ;;
+              *.exe)      CONTENT_TYPE="application/x-msdownload" ;;
+              *.msi)      CONTENT_TYPE="application/x-msi" ;;
+              *.AppImage) CONTENT_TYPE="application/octet-stream" ;;
+              *.deb)      CONTENT_TYPE="application/vnd.debian.binary-package" ;;
+              *)          CONTENT_TYPE="application/octet-stream" ;;
+            esac
+
+            # Upload to latest/
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              "${SUPABASE_URL}/storage/v1/object/desktop-releases/latest/${FILENAME}" \
+              -H "Authorization: Bearer ${SUPABASE_SECRET_KEY}" \
+              -H "apikey: ${SUPABASE_SECRET_KEY}" \
+              -H "Content-Type: ${CONTENT_TYPE}" \
+              -H "x-upsert: true" \
+              --data-binary @"$RUNNER_TEMP/${FILENAME}")
+
+            if [ "${HTTP_STATUS}" -lt 200 ] || [ "${HTTP_STATUS}" -ge 300 ]; then
+              echo "  FAILED (HTTP ${HTTP_STATUS})"
+              exit 1
+            fi
+            echo "  OK"
+          done
+
+          # --- 4. Upload manifest to latest/ ---
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            "${SUPABASE_URL}/storage/v1/object/desktop-releases/latest/manifest.json" \
+            -H "Authorization: Bearer ${SUPABASE_SECRET_KEY}" \
+            -H "apikey: ${SUPABASE_SECRET_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "x-upsert: true" \
+            --data-binary @"$RUNNER_TEMP/manifest.json")
+
+          if [ "${HTTP_STATUS}" -lt 200 ] || [ "${HTTP_STATUS}" -ge 300 ]; then
+            echo "Failed to upload latest manifest (HTTP ${HTTP_STATUS})"
+            exit 1
+          fi
+
+          echo "Done. latest/ now contains only ${VERSION} artifacts."
+          echo "Public URL: ${SUPABASE_URL}/storage/v1/object/public/desktop-releases/latest/manifest.json"
