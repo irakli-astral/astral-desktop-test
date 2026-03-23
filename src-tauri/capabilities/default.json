@@ -26,6 +26,7 @@
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "core:webview:allow-create-webview-window",
-    "updater:default"
+    "updater:default",
+    "dialog:default"
   ]
 }

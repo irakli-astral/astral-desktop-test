@@ -9,6 +9,7 @@ import {
 } from '@tauri-apps/plugin-autostart'
 import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
+import { ask } from '@tauri-apps/plugin-dialog'
 import { SignInForm } from './components/auth/SignInForm'
 import { initializeCommandSystem } from './lib/commands'
 import { TunnelTitleBar } from './components/titlebar/TunnelTitleBar'
@@ -689,6 +690,7 @@ function AppContent() {
 
 function App() {
   const { isSignedIn, isLoaded } = useAuth()
+  const [updating, setUpdating] = useState(false)
 
   useEffect(() => {
     initializeCommandSystem()
@@ -697,24 +699,43 @@ function App() {
   useEffect(() => {
     const timer = setTimeout(async () => {
       try {
+        console.log('[updater] checking for updates...')
         const update = await check()
+        console.log('[updater] check result:', update)
         if (update) {
-          const shouldUpdate = confirm(
-            `Update available: ${update.version}\n\nWould you like to download and install it?`
+          console.log('[updater] update available:', update.version)
+          const shouldUpdate = await ask(
+            `Update available: ${update.version}\n\nWould you like to download and install it?`,
+            { title: 'Update Available', kind: 'info' }
           )
           if (shouldUpdate) {
+            setUpdating(true)
+            console.log('[updater] downloading...')
             await update.downloadAndInstall()
-            if (confirm('Restart now to apply update?')) {
-              await relaunch()
-            }
+            console.log('[updater] installed, relaunching...')
+            await relaunch()
           }
+        } else {
+          console.log('[updater] no update available')
         }
-      } catch {
-        // Silent fail — don't bother user with network issues
+      } catch (e) {
+        console.error('[updater] error:', e)
+        setUpdating(false)
       }
     }, 5000)
     return () => clearTimeout(timer)
   }, [])
+
+  if (updating) {
+    return (
+      <div className="app-root">
+        <TunnelTitleBar />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
+          Downloading update...
+        </div>
+      </div>
+    )
+  }
 
   if (!isLoaded) {
     return (
